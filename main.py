@@ -17,6 +17,7 @@ from logger import Logger
 from FaceDataset import FaceDataset
 from LFWDataset import LFWDataset
 from PIL import Image
+from utils import PairwiseDistance,display_triplet_distance
 import collections
 
 # Training settings
@@ -52,12 +53,12 @@ parser.add_argument('--n-triplets', type=int, default=100000, metavar='N',
 parser.add_argument('--margin', type=float, default=1.0, metavar='MARGIN',
                     help='the margin value for the triplet loss function (default: 1.0')
 
-parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
-                    help='learning rate (default: 0.1)')
-parser.add_argument('--lr-decay', default=1e-6, type=float, metavar='LRD',
-                    help='learning rate decay ratio (default: 1e-6')
-parser.add_argument('--wd', default=1e-6, type=float,
-                    metavar='W', help='weight decay (default: 1e-6)')
+parser.add_argument('--lr', type=float, default=0.125, metavar='LR',
+                    help='learning rate (default: 0.125)')
+parser.add_argument('--lr-decay', default=1e-4, type=float, metavar='LRD',
+                    help='learning rate decay ratio (default: 1e-4')
+parser.add_argument('--wd', default=0.0, type=float,
+                    metavar='W', help='weight decay (default: 0.0)')
 parser.add_argument('--optimizer', default='adagrad', type=str,
                     metavar='OPT', help='The optimizer to use (default: Adagrad)')
 # Device options
@@ -91,19 +92,6 @@ LOG_DIR = args.log_dir + '/run-optim_{}-n{}-lr{}-wd{}-m{}'\
 
 # create logger
 logger = Logger(LOG_DIR)
-
-
-class PairwiseDistance(Function):
-    def __init__(self, p):
-        super(PairwiseDistance, self).__init__()
-        self.norm = p
-
-    def forward(self, x1, x2):
-        assert x1.size() == x2.size()
-        eps = 1e-4 / x1.size(1)
-        diff = torch.abs(x1 - x2)
-        out = torch.pow(diff, self.norm).sum(dim=1)
-        return torch.pow(out + eps, 1. / self.norm)
 
 
 class TripletMarginLoss(Function):
@@ -155,6 +143,7 @@ class Scale(object):
 
 
 kwargs = {'num_workers': 2, 'pin_memory': True} if args.cuda else {}
+l2_dist = PairwiseDistance(2)
 
 transform = transforms.Compose([
                          Scale(96),
@@ -175,6 +164,8 @@ test_loader = torch.utils.data.DataLoader(
 
 
 def main():
+    # Views the training images and displays the distance on anchor-negative and anchor-positive
+    test_display_triplet_distance = False
 
     # print the experiment configuration
     print('\nparsed options:\n{}\n'.format(vars(args)))
@@ -202,9 +193,13 @@ def main():
 
     start = args.start_epoch
     end = start + args.epochs
-    for epoch in range(start, end):
-        train(train_loader, model, optimizer, epoch)
-        test(test_loader, model, epoch)
+
+    if test_display_triplet_distance:
+        display_triplet_distance(model,train_loader)
+    else:
+        for epoch in range(start, end):
+            train(train_loader, model, optimizer, epoch)
+            test(test_loader, model, epoch)
 
 
 def train(train_loader, model, optimizer, epoch):
@@ -232,22 +227,22 @@ def train(train_loader, model, optimizer, epoch):
         predicted_labels = torch.cat([cls_a,cls_p,cls_n])
         true_labels = torch.cat([Variable(label_p.cuda()),Variable(label_p.cuda()),Variable(label_n.cuda())])
 
-        softmax_loss = criterion(predicted_labels.cuda(),true_labels.cuda())
+        cross_entropy_loss = criterion(predicted_labels.cuda(),true_labels.cuda())
 
         # compute gradient and update weights
         optimizer.zero_grad()
         triplet_loss.backward()
-        softmax_loss.backward()
+        cross_entropy_loss.backward()
         optimizer.step()
 
-        loss = triplet_loss.data[0]+softmax_loss.data[0]
+        loss = triplet_loss.data[0]+cross_entropy_loss.data[0]
 
         # update the optimizer learning rate
         adjust_learning_rate(optimizer)
 
         # log loss value
         logger.log_value('triplet_loss', triplet_loss.data[0]).step()
-        logger.log_value('softmax_loss', softmax_loss.data[0]).step()
+        logger.log_value('cross_entropy_loss', cross_entropy_loss.data[0]).step()
         logger.log_value('total_loss', loss).step()
 
         if batch_idx % args.log_interval == 0:
@@ -258,12 +253,12 @@ def train(train_loader, model, optimizer, epoch):
                     loss))
 
 
-        dists = torch.sqrt(torch.sum((out_a - out_n) ** 2, 1))  # euclidean distance
+        dists = l2_dist.forward(out_a,out_n) #torch.sqrt(torch.sum((out_a - out_n) ** 2, 1))  # euclidean distance
         distances.append(dists.data.cpu().numpy())
         labels.append(np.zeros(len(distances)))
 
 
-        dists = torch.sqrt(torch.sum((out_a - out_p) ** 2, 1))  # euclidean distance
+        dists = l2_dist.forward(out_a,out_p)#torch.sqrt(torch.sum((out_a - out_p) ** 2, 1))  # euclidean distance
         distances.append(dists.data.cpu().numpy())
         labels.append(np.ones(len(distances)))
 
@@ -296,7 +291,7 @@ def test(test_loader, model, epoch):
 
         # compute output
         out_a, out_p = model(data_a), model(data_p)
-        dists = torch.sqrt(torch.sum((out_a - out_p) ** 2, 1))  # euclidean distance
+        dists = l2_dist.forward(out_a,out_p)#torch.sqrt(torch.sum((out_a - out_p) ** 2, 1))  # euclidean distance
         distances.append(dists.data.cpu().numpy())
         labels.append(label.data.cpu().numpy())
 
