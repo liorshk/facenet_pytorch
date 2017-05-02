@@ -1,1 +1,3 @@
 logs/
+__pycache__/
+align/

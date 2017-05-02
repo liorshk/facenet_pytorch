@@ -5,10 +5,10 @@ import os
 import numpy as np
 from tqdm import tqdm
 
-class FaceDataset(datasets.ImageFolder):
+class TripletFaceDataset(datasets.ImageFolder):
 
     def __init__(self, dir, n_triplets, transform=None, *arg, **kw):
-        super(FaceDataset, self).__init__(dir,transform)
+        super(TripletFaceDataset, self).__init__(dir,transform)
 
         self.n_triplets = n_triplets
 
